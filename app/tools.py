@@ -3,12 +3,17 @@
 Function docstrings and type hints here become the "tool descriptions" presented to the model.
 Rewriting descriptions changes whether the model uses a tool and which arguments it supplies.
 """
-
-import json
-from functools import cache
 from pathlib import Path
+import json
+from datetime import datetime, timezone
+from uuid import uuid4
+LEARNING_LOG_DIR = Path(__file__).resolve().parent.parent / "learning_log"
+
+from functools import cache
+
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+LEARNING_LOG_DIR = Path(__file__).resolve().parent.parent / "learning_log"
 MAX_RESULTS = 3
 
 
@@ -77,3 +82,72 @@ def get_lecture_summary(lecture: int) -> str:
         available = sorted(p.stem for p in (DATA_DIR / "lectures").glob("*.md"))
         return f"Key points for Lecture {lecture:02d} are not available yet. Available sessions: {', '.join(available)}"
     return path.read_text(encoding="utf-8")
+
+def make_quiz(lecture: int) -> str:
+    """指定された講義回から復習問題を1問作成し、解答も返す。
+
+    ユーザーが講義の復習や理解度確認のために
+    クイズ・練習問題を求めたときに使用する。
+    lectureには講義番号を整数で指定する。
+    """
+    glossary = load_glossary()
+
+    # 指定された講義回の用語を抽出
+    terms = [
+        entry for entry in glossary
+        if entry["lecture"] == lecture
+    ]
+
+    # 該当する用語がなければメッセージを返す
+    if not terms:
+        return f"第{lecture}回の復習問題はありません。"
+
+    # 最初の用語を1つ選択
+    term = terms[0]
+
+    question = f"{term['term']}とは何ですか？"
+    answer = term["definition"]
+
+    return f"問題：{question}\n解答：{answer}"
+
+
+def save_learning_log(lecture: int, topic: str, notes: str) -> str:
+    """Save a learning record to the learning_log directory.
+
+    Use this tool only when the user explicitly requests to save
+    a learning record, study note, or learning progress.
+    The tool requires human approval before execution.
+
+    Args:
+        lecture: Lecture number (0 if unspecified).
+        topic: Topic studied by the user.
+        notes: Learning content or study notes to save.
+    """
+    # 保存先のフォルダを作成する
+    LEARNING_LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+    # 保存日時を取得する
+    now = datetime.now(timezone.utc)
+
+    # 同名ファイルの衝突を避ける
+    filename = (
+        f"{now:%Y%m%d_%H%M%S}_"
+        f"{uuid4().hex[:8]}.json"
+    )
+    filepath = LEARNING_LOG_DIR / filename
+
+    # 保存する学習記録
+    record = {
+        "created_at": now.isoformat(),
+        "lecture": lecture,
+        "topic": topic,
+        "notes": notes,
+    }
+
+    # JSONファイルとして保存
+    filepath.write_text(
+        json.dumps(record, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    return f"Learning log saved: {filepath}"

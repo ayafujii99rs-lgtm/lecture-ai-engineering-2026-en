@@ -16,7 +16,8 @@ import inspect
 import json
 from pathlib import Path
 
-from pydantic_ai import Agent
+
+from pydantic_ai import Agent, DeferredToolRequests, DeferredToolResults
 from pydantic_ai.exceptions import ModelHTTPError
 from fastmcp import Client
 from pydantic_ai.mcp import MCPToolset, StdioTransport
@@ -35,12 +36,27 @@ You are a learning support agent for the AI Engineering Pilot Course (AIE2026).
 - If something is absent from the glossary, say "It is not in the glossary" instead of making assertions based on guesses.
 - End your answer by indicating the relevant session (Lecture NN).
 - Guide learners with hints on how to think, rather than writing homework answers for them.
+- Use save_learning_log only when the user explicitly asks to save a learning record.
+- Never invent learning progress or save records without human approval.
 """
 
 # Pass the model at runtime (so tests can substitute TestModel without calling an API)
-agent = Agent(instructions=INSTRUCTIONS)
+
+agent = Agent(
+    instructions=INSTRUCTIONS,
+    output_type=[str, DeferredToolRequests],
+)
+
 agent.tool_plain(tools.search_glossary)
 agent.tool_plain(tools.get_lecture_summary)
+agent.tool_plain(tools.make_quiz)
+
+# 学習記録保存ツール：必ず承認を要求する
+agent.tool_plain(
+    tools.save_learning_log,
+    requires_approval=True,
+)
+
 
 # TODO(Lecture 03 exercise): create make_quiz in tools.py and register it here
 
@@ -128,14 +144,54 @@ def main() -> None:
     print(f"[model] {MODEL}")
     if args.mcp:
         print("[tools] MCP servers (app/mcp_servers.json)")
+   
     try:
-        result = target.run_sync(args.question, model=build_model())
+        model = build_model()
+        result = target.run_sync(args.question, model=model)
+
+        # 承認待ちのツールがある間は、ユーザーに確認する
+        while isinstance(result.output, DeferredToolRequests):
+            requests = result.output
+
+            # 今回は外部実行ツールを対象にしない
+            if requests.calls:
+                raise RuntimeError(
+                    "External deferred calls are not supported."
+                )
+
+            approvals = {}
+
+            for call in requests.approvals:
+                print("\n--- Approval required ---")
+                print(f"Tool: {call.tool_name}")
+                print(f"Arguments: {call.args}")
+
+                answer = input(
+                    "Do you approve saving this record? [y/N]: "
+                )
+
+                # y / yes の場合だけ承認する
+                approved = answer.strip().lower() in {"y", "yes"}
+                approvals[call.tool_call_id] = approved
+
+            # 承認結果を渡してエージェントを再開する
+            result = target.run_sync(
+                message_history=result.all_messages(),
+                deferred_tool_results=DeferredToolResults(
+                    approvals=approvals
+                ),
+                model=model,
+            )
+
     except ModelHTTPError as e:
         print(api_error_message(e.status_code, str(e.body)[:200]))
         raise SystemExit(1)
+
     print(result.output)
+
     if args.trace:
         print_trace(result)
+
 
 
 if __name__ == "__main__":
